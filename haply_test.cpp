@@ -1,33 +1,39 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <vector>
 
-// Include the official headers
-// (If these show as red, ensure CMake loaded the include directories correctly)
-#include "Haply/src/Haply/Device.h"
-#include "Haply/src/Haply/HaplyTwoDoFMech.h"
-#include "Haply/src/Haply/Board.h"
+// 1. Include the headers properly
+#include "Haply/Device.h"
+#include "Haply/HaplyTwoDoFMech.h"
+#include "Haply/Board.h"
+#include "Wjwwood/WjwwoodSerial.h" // Required for Serial implementation
+
+using namespace Haply; // Namespace defined in library files
 
 int main() {
-    const char* portName = "/dev/ttyACM0";
-    int DEVICE_ID = 2; // We send to 2
+    // 2. Setup Serial Connection
+    // The Board class requires a Serial object pointer
+    WjwwoodSerial serial;
+
+    // Attempt to open connection (WjwwoodSerial auto-detects ports in this version)
+    if (!serial.open()) {
+        std::cerr << "Failed to open serial port!" << std::endl;
+        return -1;
+    }
 
     std::cout << "--- HAPLY OFFICIAL API (v0.1.0) ---" << std::endl;
-    std::cout << "Connecting to " << portName << "..." << std::endl;
 
-    // 1. Setup Board
-    // The library handles Serial opening and flushing internally
-    Haply::Board board(portName, 0);
+    // 3. Setup Board
+    // Board constructor takes a Serial*
+    Board board(&serial);
 
-    // 2. Setup Mechanics & Device
-    Haply::HaplyTwoDoFMech mech;
-    Haply::Device haply(DEVICE_ID, &board, &mech);
+    // 4. Setup Device
+    // Constructor: Device(DeviceType, deviceID, Board*)
+    // The mechanism is created internally based on DeviceType::HaplyTwoDOF
+    Device haply(DeviceType::HaplyTwoDOF, 2, &board);
 
-    // 3. Setup Handshake
-    // v0.1.0 Device constructor might not auto-send setup, so we do it manually if needed,
-    // but usually Device() handles it. Let's force a parameter set just in case.
     std::cout << "Sending device parameters..." << std::endl;
-    haply.set_mechanism_parameters(mech.get_coordinate()); // Dummy update to force comms
 
     // Give it a moment to settle
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -35,41 +41,35 @@ int main() {
     std::cout << "Starting Loop..." << std::endl;
 
     while (true) {
-        if (board.data_available()) {
+        if (board.data_available()) { //
 
-            // 1. Read Data
-            // Device::device_read_data() or similar usually handles the receive
-            // But usually we just call get_device_angles() which triggers the read
-            float angles[2];
-            haply.get_device_angles(angles);
+            // 5. Read Data
+            // get_device_position returns a std::vector<float>, not a raw array
+            std::vector<float> angles = haply.get_device_angles();
+            std::vector<float> pos = haply.get_device_position(angles);
 
-            float pos[2];
-            haply.get_device_position(pos);
-
-            // 2. Physics (Virtual Wall)
+            // 6. Physics (Virtual Wall Example)
             float fx = 0, fy = 0;
+            // Access vector elements using [0] and [1]
             if (pos[0] > 0.05) {
                 fx = -300.0 * (pos[0] - 0.05);
             }
 
-            // 3. Write Torques
-            float torques[2];
-            float forces[2] = {fx, fy};
-            mech.torqueCalculation(forces, torques);
+            // 7. Write Torques
+            std::vector<float> forces = {fx, fy};
 
-            haply.set_device_torques(torques);
+            // set_device_torques calculates AND sets the motor torques internally
+            haply.set_device_torques(forces);
+
+            // Transmits the stored torques to the board
             haply.device_write_torques();
 
             // Debug
-            printf("ID:%d | Pos: (%.4f, %.4f) | Force: %.2f\n", DEVICE_ID, pos[0], pos[1], fx);
-        } else {
-            // If no data, send a request (Keep Alive)
-            // Some versions require you to explicitly request data if not streaming
-             haply.device_read_request();
+            printf("Pos: (%.4f, %.4f) | Force: %.2f\n", pos[0], pos[1], fx);
         }
 
         // 1kHz loop roughly
-        std::this_thread::sleep_for(std::chrono::microseconds(500));
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
 
     return 0;

@@ -3,31 +3,29 @@ project(SandSim)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_subdirectory(Haply)
-# 1. Find system libraries
+# Load the Haply library and its submodules
+add_subdirectory(Haply-API-cpp)
+
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glfw3 REQUIRED)
 
-# 2. Include directories
 include_directories(
         ${OPENGL_INCLUDE_DIR}
         ${GLEW_INCLUDE_DIRS}
-        imgui   # Include the local imgui folder
-        Haply/src
+        imgui
+        Haply-API-cpp/src
+        # --- FIX: Add the path to the Serial library headers ---
+        Haply-API-cpp/external/github-HaplyHaptics-serial/include
 )
 
-# 3. Gather source files
 file(GLOB IMGUI_SOURCES "imgui/*.cpp")
 
-# 4. Create Executable
-add_executable(SandSim main.cpp ${IMGUI_SOURCES}
-        haply_test.cpp)
+add_executable(SandSim main.cpp ${IMGUI_SOURCES} haply_test.cpp)
 
-# 5. Link Libraries
 target_link_libraries(SandSim
         OpenGL::GL
         GLEW::GLEW
         glfw
-        haply_cpp_api
+        haply-api-cpp
 )
