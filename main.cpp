@@ -18,6 +18,7 @@ const int INITIAL_HEIGHT = 60;
 enum MaterialType {
     EMPTY = 0,
     SAND,
+    WETSAND,
     COUNT
 };
 
@@ -84,6 +85,20 @@ public:
         return count;
     }
 
+    int CountWetSand(int cx, int cy, int radius) {
+        int count = 0;
+        int r2 = radius * radius;
+        for (int y = cy - radius; y <= cy + radius; ++y) {
+            for (int x = cx - radius; x <= cx + radius; ++x) {
+                if (x < 0 || x >= width || y < 0 || y >= height) continue;
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+                    if (Get(x, y).type == WETSAND) count++;
+                }
+            }
+        }
+        return count;
+    }
+
     // BFS/Spiral search to find nearest empty cell to (targetX, targetY)
     // Returns glm::ivec2(-1, -1) if nothing found
     glm::ivec2 FindNearestEmpty(int targetX, int targetY, int maxRadius) {
@@ -121,6 +136,9 @@ public:
                 if (grid[y * width + x].type == SAND) {
                     UpdateSand(x, y);
                 }
+                if (grid[y * width + x].type == WETSAND) {
+                    UpdateWetSand(x, y);
+                }
             }
         }
     }
@@ -143,6 +161,13 @@ private:
             } else if (rightEmpty) {
                 Move(x, y, x + 1, y + 1);
             }
+        }
+    }
+
+    void UpdateWetSand(int x, int y) {
+        // Only move if the cell directly below is EMPTY
+        if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
+            Move(x, y, x, y + 1);
         }
     }
 };
@@ -228,6 +253,7 @@ public:
 
 ImU32 GetColor(MaterialType type) {
     if (type == SAND) return IM_COL32(235, 200, 100, 255);
+    if (type == WETSAND) return IM_COL32(160, 130, 70, 255);
     return IM_COL32(0, 0, 0, 0);
 }
 
@@ -253,6 +279,7 @@ int main() {
 
     SandSimulation sim;
     HapticSystem haptics;
+    static int currentMaterial = SAND;
 
     float timeAccumulator = 0.0f;
 
@@ -276,6 +303,8 @@ int main() {
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
         ImGui::Begin("Controls");
         ImGui::SliderFloat("Sim Speed (ms)", &sim.tickDelayMs, 1.0f, 200.0f);
+        ImGui::RadioButton("Dry Sand", &currentMaterial, SAND);
+        ImGui::RadioButton("Wet Sand", &currentMaterial, WETSAND);
         ImGui::Separator();
 
         // Haptic Settings
@@ -337,7 +366,7 @@ int main() {
             haptics.Update(mouseGridPos, sim);
 
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-               sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, SAND);
+               sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType) currentMaterial);
             }
         }
 
