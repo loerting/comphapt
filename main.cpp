@@ -19,6 +19,7 @@ enum MaterialType {
     EMPTY = 0,
     SAND,
     WETSAND,
+    WATER,
     COUNT
 };
 
@@ -71,32 +72,22 @@ public:
         return true;
     }
 
-    int CountSand(int cx, int cy, int radius) {
-        int count = 0;
+    float GetResistance(int cx, int cy, int radius) {
+        float totalResistance = 0.0f;
         int r2 = radius * radius;
         for (int y = cy - radius; y <= cy + radius; ++y) {
             for (int x = cx - radius; x <= cx + radius; ++x) {
                 if (x < 0 || x >= width || y < 0 || y >= height) continue;
                 if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
-                    if (Get(x, y).type == SAND) count++;
-                }
-            }
-        }
-        return count;
-    }
+                    MaterialType type = Get(x, y).type;
 
-    int CountWetSand(int cx, int cy, int radius) {
-        int count = 0;
-        int r2 = radius * radius;
-        for (int y = cy - radius; y <= cy + radius; ++y) {
-            for (int x = cx - radius; x <= cx + radius; ++x) {
-                if (x < 0 || x >= width || y < 0 || y >= height) continue;
-                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
-                    if (Get(x, y).type == WETSAND) count++;
+                    if (type == SAND)         totalResistance += 0.1f;
+                    else if (type == WETSAND) totalResistance += 0.5f;
+                    else if (type == WATER)   totalResistance += 0.02f;
                 }
             }
         }
-        return count;
+        return totalResistance;
     }
 
     // BFS/Spiral search to find nearest empty cell to (targetX, targetY)
@@ -133,12 +124,10 @@ public:
     void Update() {
         for (int y = height - 1; y >= 0; --y) {
             for (int x = 0; x < width; ++x) {
-                if (grid[y * width + x].type == SAND) {
-                    UpdateSand(x, y);
-                }
-                if (grid[y * width + x].type == WETSAND) {
-                    UpdateWetSand(x, y);
-                }
+                MaterialType type = grid[y * width + x].type;
+                if (type == SAND) UpdateSand(x, y);
+                else if (type == WETSAND) UpdateWetSand(x, y);
+                else if (type == WATER) UpdateWater(x, y);
             }
         }
     }
@@ -170,6 +159,39 @@ private:
             Move(x, y, x, y + 1);
         }
     }
+
+    void UpdateWater(int x, int y) {
+        // 1. Move Down
+        if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
+            Move(x, y, x, y + 1);
+        }
+            // 2. Move Diagonally Down
+        else if (y + 1 < height) {
+            bool leftEmpty = (x - 1 >= 0) && Get(x - 1, y + 1).type == EMPTY;
+            bool rightEmpty = (x + 1 < width) && Get(x + 1, y + 1).type == EMPTY;
+
+            if (leftEmpty && rightEmpty) {
+                Move(x, y, (rand() % 2 == 0) ? x - 1 : x + 1, y + 1);
+            } else if (leftEmpty) {
+                Move(x, y, x - 1, y + 1);
+            } else if (rightEmpty) {
+                Move(x, y, x + 1, y + 1);
+            }
+                // 3. Move Horizontally (The "Fluid" part)
+            else {
+                bool leftSide = (x - 1 >= 0) && Get(x - 1, y).type == EMPTY;
+                bool rightSide = (x + 1 < width) && Get(x + 1, y).type == EMPTY;
+
+                if (leftSide && rightSide) {
+                    Move(x, y, (rand() % 2 == 0) ? x - 1 : x + 1, y);
+                } else if (leftSide) {
+                    Move(x, y, x - 1, y);
+                } else if (rightSide) {
+                    Move(x, y, x + 1, y);
+                }
+            }
+        }
+    }
 };
 
 // --- Haptic System Implementation ---
@@ -182,8 +204,8 @@ public:
 
     void Update(glm::vec2 targetDevicePos, SandSimulation& sim) {
         devicePos = targetDevicePos;
-        int sandCount = sim.CountSand((int)proxyPos.x, (int)proxyPos.y, (int)radius);
-        float viscosity = 1.0f / (1.0f + (sandCount * frictionCoef));
+        float resistance = sim.GetResistance((int)proxyPos.x, (int)proxyPos.y, (int)radius);
+        float viscosity = 1.0f / (1.0f + (resistance * frictionCoef));
         glm::vec2 diff = devicePos - proxyPos;
         proxyPos += diff * viscosity;
 
@@ -201,7 +223,7 @@ public:
         for (int y = py - r; y <= py + r; ++y) {
             for (int x = px - r; x <= px + r; ++x) {
                 // 1. Check if pixel is SAND and inside circle
-                if (sim.Get(x, y).type == SAND) {
+                if (sim.Get(x, y).type != EMPTY) {
                     float dx = (float)x - proxyPos.x;
                     float dy = (float)y - proxyPos.y;
                     float distSq = dx*dx + dy*dy;
@@ -254,6 +276,7 @@ public:
 ImU32 GetColor(MaterialType type) {
     if (type == SAND) return IM_COL32(235, 200, 100, 255);
     if (type == WETSAND) return IM_COL32(160, 130, 70, 255);
+    if (type == WATER) return IM_COL32(0, 120, 255, 200);
     return IM_COL32(0, 0, 0, 0);
 }
 
@@ -305,6 +328,7 @@ int main() {
         ImGui::SliderFloat("Sim Speed (ms)", &sim.tickDelayMs, 1.0f, 200.0f);
         ImGui::RadioButton("Dry Sand", &currentMaterial, SAND);
         ImGui::RadioButton("Wet Sand", &currentMaterial, WETSAND);
+        ImGui::RadioButton("Water", &currentMaterial, WATER);
         ImGui::Separator();
 
         // Haptic Settings
