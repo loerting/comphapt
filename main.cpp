@@ -136,6 +136,11 @@ private:
     Cell boundaryCell = { SAND }; // Treat boundary as solid/sand so we don't push into it
 
     void UpdateSand(int x, int y) {
+
+        if (y + 1 < height && Get(x, y + 1).type == WATER) {
+            Swap(x, y, x, y + 1);
+            return;
+        }
         if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
             Move(x, y, x, y + 1);
         }
@@ -154,9 +159,15 @@ private:
     }
 
     void UpdateWetSand(int x, int y) {
-        // Only move if the cell directly below is EMPTY
+        // Sink through water
+        if (y + 1 < height && Get(x, y + 1).type == WATER) {
+            Swap(x, y, x, y + 1);
+            return;
+        }
+        // Normal falling
         if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
             Move(x, y, x, y + 1);
+            return;
         }
     }
 
@@ -223,6 +234,14 @@ private:
         }
 
         return false;
+    }
+
+    bool Swap(int x1, int y1, int x2, int y2) {
+        if (x1 < 0 || x1 >= width || y1 < 0 || y1 >= height) return false;
+        if (x2 < 0 || x2 >= width || y2 < 0 || y2 >= height) return false;
+
+        std::swap(grid[y1 * width + x1], grid[y2 * width + x2]);
+        return true;
     }
 
 };
