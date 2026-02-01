@@ -11,6 +11,7 @@ include_directories(
         ${OPENGL_INCLUDE_DIR}
         ${GLEW_INCLUDE_DIRS}
         imgui
+        ${CMAKE_SOURCE_DIR}  # <--- ADD THIS (Points to project root)
 )
 
 file(GLOB IMGUI_SOURCES "imgui/*.cpp")
@@ -21,4 +22,5 @@ target_link_libraries(SandSim
         OpenGL::GL
         GLEW::GLEW
         glfw
+        # No GLM library needed here, it's header-only!
 )
