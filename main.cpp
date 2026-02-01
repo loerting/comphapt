@@ -99,7 +99,7 @@ ImU32 GetColor(MaterialType type) {
     return IM_COL32(0, 0, 0, 0); // Transparent
 }
 
-int __main() {
+int main() {
     // Setup Window
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
