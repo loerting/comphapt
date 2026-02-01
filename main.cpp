@@ -161,6 +161,11 @@ private:
     }
 
     void UpdateWater(int x, int y) {
+
+        if (TryWetSand(x, y)) {
+            return; // water is gone
+        }
+
         // 1. Move Down
         if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
             Move(x, y, x, y + 1);
@@ -192,6 +197,34 @@ private:
             }
         }
     }
+
+    bool TryWetSand(int wx, int wy) {
+        static const int offsets[8][2] = {
+                { 0,  1}, { 0, -1}, { 1,  0}, {-1,  0},
+                { 1,  1}, {-1,  1}, { 1, -1}, {-1, -1}
+        };
+
+        for (auto& o : offsets) {
+            int sx = wx + o[0];
+            int sy = wy + o[1];
+
+            if (sx < 0 || sx >= width || sy < 0 || sy >= height)
+                continue;
+
+            if (Get(sx, sy).type == SAND) {
+                // Convert sand → wet sand
+                Set(sx, sy, WETSAND);
+
+                // Consume this water
+                Set(wx, wy, EMPTY);
+
+                return true; // reaction happened
+            }
+        }
+
+        return false;
+    }
+
 };
 
 // --- Haptic System Implementation ---
