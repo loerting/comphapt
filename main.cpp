@@ -32,9 +32,7 @@ public:
     std::vector<Cell> grid;
     float tickDelayMs = 16.0f;
 
-    SandSimulation() {
-        Resize(width, height);
-    }
+    SandSimulation() { Resize(width, height); }
 
     void Resize(int w, int h) {
         width = w;
@@ -42,45 +40,85 @@ public:
         grid.assign(width * height, { EMPTY });
     }
 
-    void Clear() {
-        std::fill(grid.begin(), grid.end(), Cell{ EMPTY });
-    }
+    void Clear() { std::fill(grid.begin(), grid.end(), Cell{ EMPTY }); }
 
-    Cell& Get(int x, int y) {
+    // Boundary-safe getter
+    Cell Get(int x, int y) {
         if (x < 0 || x >= width || y < 0 || y >= height) return boundaryCell;
         return grid[y * width + x];
     }
 
+    // Boundary-safe setter
     void Set(int x, int y, MaterialType type) {
         if (x >= 0 && x < width && y >= 0 && y < height) {
             grid[y * width + x].type = type;
         }
     }
 
-    // Count sand pixels within a radius
+    // Public Move function for the Haptic System
+    bool Move(int x1, int y1, int x2, int y2) {
+        // Source must be valid, Target must be valid bounds
+        if (x1 < 0 || x1 >= width || y1 < 0 || y1 >= height) return false;
+        if (x2 < 0 || x2 >= width || y2 < 0 || y2 >= height) return false;
+
+        // Check if target is actually empty (don't overwrite sand)
+        if (grid[y2 * width + x2].type != EMPTY) return false;
+
+        Cell temp = grid[y1 * width + x1];
+        grid[y1 * width + x1].type = EMPTY;
+        grid[y2 * width + x2].type = temp.type;
+        return true;
+    }
+
     int CountSand(int cx, int cy, int radius) {
         int count = 0;
         int r2 = radius * radius;
         for (int y = cy - radius; y <= cy + radius; ++y) {
             for (int x = cx - radius; x <= cx + radius; ++x) {
-                // Check bounds
                 if (x < 0 || x >= width || y < 0 || y >= height) continue;
-
-                // Check circle distance
                 if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
-                    if (Get(x, y).type == SAND) {
-                        count++;
-                    }
+                    if (Get(x, y).type == SAND) count++;
                 }
             }
         }
         return count;
     }
 
+    // BFS/Spiral search to find nearest empty cell to (targetX, targetY)
+    // Returns glm::ivec2(-1, -1) if nothing found
+    glm::ivec2 FindNearestEmpty(int targetX, int targetY, int maxRadius) {
+        // 1. Check the target itself first
+        if (Get(targetX, targetY).type == EMPTY &&
+            targetX >= 0 && targetX < width && targetY >= 0 && targetY < height) {
+            return glm::ivec2(targetX, targetY);
+        }
+
+        // 2. Spiral/Square search outwards
+        for (int r = 1; r <= maxRadius; ++r) {
+            for (int dy = -r; dy <= r; ++dy) {
+                for (int dx = -r; dx <= r; ++dx) {
+                    // Only check the outer ring (optimization)
+                    if (abs(dx) != r && abs(dy) != r) continue;
+
+                    int nx = targetX + dx;
+                    int ny = targetY + dy;
+
+                    // Bounds check
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        if (Get(nx, ny).type == EMPTY) {
+                            return glm::ivec2(nx, ny);
+                        }
+                    }
+                }
+            }
+        }
+        return glm::ivec2(-1, -1);
+    }
+
     void Update() {
         for (int y = height - 1; y >= 0; --y) {
             for (int x = 0; x < width; ++x) {
-                if (Get(x, y).type == SAND) {
+                if (grid[y * width + x].type == SAND) {
                     UpdateSand(x, y);
                 }
             }
@@ -88,7 +126,7 @@ public:
     }
 
 private:
-    Cell boundaryCell = { EMPTY };
+    Cell boundaryCell = { SAND }; // Treat boundary as solid/sand so we don't push into it
 
     void UpdateSand(int x, int y) {
         if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
@@ -97,7 +135,6 @@ private:
         else if (y + 1 < height) {
             bool leftEmpty = (x - 1 >= 0) && Get(x - 1, y + 1).type == EMPTY;
             bool rightEmpty = (x + 1 < width) && Get(x + 1, y + 1).type == EMPTY;
-
             if (leftEmpty && rightEmpty) {
                 int offset = (rand() % 2 == 0) ? -1 : 1;
                 Move(x, y, x + offset, y + 1);
@@ -108,49 +145,76 @@ private:
             }
         }
     }
-
-    void Move(int x1, int y1, int x2, int y2) {
-        Cell temp = Get(x1, y1);
-        Set(x1, y1, EMPTY);
-        Set(x2, y2, temp.type);
-    }
 };
 
 // --- Haptic System Implementation ---
 class HapticSystem {
 public:
-    glm::vec2 devicePos = { 0.0f, 0.0f }; // Mouse / Handle position
-    glm::vec2 proxyPos  = { 0.0f, 0.0f }; // Virtual "Proxy" position
-
-    // Tuning parameters
-    float radius = 4.0f;       // Radius of the tool
-    float frictionCoef = 0.2f; // How "thick" the sand feels
+    glm::vec2 devicePos = { 0.0f, 0.0f };
+    glm::vec2 proxyPos  = { 0.0f, 0.0f };
+    float radius = 4.0f;
+    float frictionCoef = 0.2f;
 
     void Update(glm::vec2 targetDevicePos, SandSimulation& sim) {
         devicePos = targetDevicePos;
-
-        // 1. Calculate Sand Density at the PROXY location
         int sandCount = sim.CountSand((int)proxyPos.x, (int)proxyPos.y, (int)radius);
-
-        // 2. Calculate Viscosity (0.0 = Stuck, 1.0 = Free)
         float viscosity = 1.0f / (1.0f + (sandCount * frictionCoef));
-
-        // 3. Move Proxy towards Device (damped by viscosity)
         glm::vec2 diff = devicePos - proxyPos;
         proxyPos += diff * viscosity;
+
+        // Perform displacement AFTER moving the proxy
+        DisplaceSand(sim);
+    }
+
+    void DisplaceSand(SandSimulation& sim) {
+        int r = (int)std::ceil(radius);
+        int px = (int)proxyPos.x;
+        int py = (int)proxyPos.y;
+        float rSq = radius * radius;
+
+        // Iterate over the bounding box of the cursor
+        for (int y = py - r; y <= py + r; ++y) {
+            for (int x = px - r; x <= px + r; ++x) {
+                // 1. Check if pixel is SAND and inside circle
+                if (sim.Get(x, y).type == SAND) {
+                    float dx = (float)x - proxyPos.x;
+                    float dy = (float)y - proxyPos.y;
+                    float distSq = dx*dx + dy*dy;
+
+                    if (distSq <= rSq) {
+                        // 2. Calculate Push Vector
+                        glm::vec2 dir(dx, dy);
+
+                        // Handle center case (push up if exactly centered)
+                        if (glm::length(dir) < 0.01f) dir = glm::vec2(0, -1);
+                        else dir = glm::normalize(dir);
+
+                        // 3. Calculate Target Position (Just outside radius)
+                        glm::vec2 targetPos = proxyPos + dir * (radius + 1.5f); // +1.5 ensures we clear the int boundary
+                        int tx = (int)targetPos.x;
+                        int ty = (int)targetPos.y;
+
+                        // 4. Try to find an empty spot there or nearby
+                        // Search radius 3 is usually enough for "fluid" motion
+                        glm::ivec2 bestSpot = sim.FindNearestEmpty(tx, ty, 3);
+
+                        // 5. Move if valid spot found
+                        if (bestSpot.x != -1) {
+                            sim.Move(x, y, bestSpot.x, bestSpot.y);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     void Render(ImDrawList* draw_list, ImVec2 origin, float cellSize) {
         ImVec2 screenDev = ImVec2(origin.x + devicePos.x * cellSize, origin.y + devicePos.y * cellSize);
         ImVec2 screenProx = ImVec2(origin.x + proxyPos.x * cellSize, origin.y + proxyPos.y * cellSize);
 
-        // 1. Draw Proxy (Red Circle)
         draw_list->AddCircleFilled(screenProx, radius * cellSize, IM_COL32(255, 50, 50, 200));
-
-        // 2. Draw Device (Green Outline)
         draw_list->AddCircle(screenDev, radius * cellSize, IM_COL32(50, 255, 50, 150), 0, 2.0f);
 
-        // 3. Draw Spring Force (Blue Arrow)
         float dist = glm::distance(devicePos, proxyPos);
         if (dist > 0.1f) {
             ImVec2 arrowEnd = ImVec2(
