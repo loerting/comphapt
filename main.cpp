@@ -270,7 +270,7 @@ public:
     glm::vec2 devicePos = { 0.0f, 0.0f };
     glm::vec2 proxyPos  = { 0.0f, 0.0f };
     float radius = 4.0f;
-    float frictionCoef = 0.2f;
+    float frictionCoef = 1.0f;
 
     void Update(glm::vec2 targetDevicePos, SandSimulation& sim) {
         devicePos = targetDevicePos;
@@ -312,8 +312,7 @@ public:
                         int ty = (int)targetPos.y;
 
                         // 4. Try to find an empty spot there or nearby
-                        // Search radius 3 is usually enough for "fluid" motion
-                        glm::ivec2 bestSpot = sim.FindNearestEmpty(tx, ty, 3);
+                        glm::ivec2 bestSpot = sim.FindNearestEmpty(tx, ty, 10);
 
                         // 5. Move if valid spot found
                         if (bestSpot.x != -1) {
@@ -408,7 +407,7 @@ int main() {
         // Haptic Settings
         ImGui::Text("Haptic Settings");
         ImGui::SliderFloat("Cursor Radius", &haptics.radius, 1.0f, 10.0f); // New Setting
-        ImGui::SliderFloat("Friction", &haptics.frictionCoef, 0.01f, 1.0f);
+        ImGui::SliderFloat("Friction", &haptics.frictionCoef, 0.01f, 5.0f);
 
         ImGui::Separator();
         ImGui::Text("Device (Mouse) vs Proxy (Red)");
