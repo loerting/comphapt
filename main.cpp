@@ -36,7 +36,6 @@ struct Cell {
 };
 
 // --- Haptic Device Communication Class ---
-// --- Haptic Device Communication Class (Robust Version) ---
 class HapticDevice {
 private:
     serial::Serial* mySerial = nullptr;
@@ -57,7 +56,6 @@ public:
             if (mySerial->isOpen()) {
                 connected = true;
                 currentPositionMeters = 0.0f;
-                // Flush input buffer on connect to remove stale data
                 mySerial->flushInput();
                 return true;
             }
@@ -81,7 +79,6 @@ public:
     void Sync(float forceOutputNewtons) {
         if (!connected || !mySerial) return;
 
-        // 1. READ Loop (Existing logic)
         int maxReads = 50;
         while (mySerial->available() && maxReads-- > 0) {
             std::string line = mySerial->readline();
@@ -95,19 +92,14 @@ public:
             }
         }
 
-        // 2. WRITE Force (Traffic Reduction + Formatting Fix)
         static float lastSentForce = -999.0f;
         static double lastSendTime = 0.0;
-        double currentTime = glfwGetTime(); // Ensure you have access to glfwGetTime or similar
+        double currentTime = glfwGetTime();
 
-        // Send if force changed OR if 50ms passed (keepalive)
-        if (abs(forceOutputNewtons - lastSentForce) > 0.001f || (currentTime - lastSendTime) > 0.05) {
+        if (abs(forceOutputNewtons - lastSentForce) > 0.005f || (currentTime - lastSendTime) > 0.05) {
             std::stringstream ss;
-
-            // --- THE FIX: Force decimal format, no scientific notation ---
+            // Force decimal format
             ss << std::fixed << std::setprecision(5) << "F " << forceOutputNewtons << "\n";
-            // -------------------------------------------------------------
-
             try {
                 mySerial->write(ss.str());
                 lastSentForce = forceOutputNewtons;
@@ -162,13 +154,24 @@ public:
         return true;
     }
 
-    float GetResistance(int cx, int cy, int radius) {
+    // Precise float-based resistance check (Kept this improvement)
+    float GetResistance(float cx, float cy, float radius) {
         float totalResistance = 0.0f;
-        int r2 = radius * radius;
-        for (int y = cy - radius; y <= cy + radius; ++y) {
-            for (int x = cx - radius; x <= cx + radius; ++x) {
+        float r2 = radius * radius;
+
+        int minX = (int)floor(cx - radius);
+        int maxX = (int)ceil(cx + radius);
+        int minY = (int)floor(cy - radius);
+        int maxY = (int)ceil(cy + radius);
+
+        for (int y = minY; y <= maxY; ++y) {
+            for (int x = minX; x <= maxX; ++x) {
                 if (x < 0 || x >= width || y < 0 || y >= height) continue;
-                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+
+                float dx = x - cx;
+                float dy = y - cy;
+
+                if (dx*dx + dy*dy <= r2) {
                     MaterialType type = Get(x, y).type;
                     if (type == SAND)         totalResistance += 0.1f;
                     else if (type == WETSAND) totalResistance += Get(x, y).soak * 0.02f + 0.1f;
@@ -279,29 +282,25 @@ public:
     enum AxisMode { X_AXIS, Y_AXIS };
     enum ControlMode { MODE_1DOF, MODE_2DOF };
 
-    // -- State --
     glm::vec2 proxyPos  = { 30.0f, 30.0f };
     glm::vec2 devicePos = { 30.0f, 30.0f };
 
-    // -- Configuration --
+    // Smooth Resistance State
+    float smoothedResistance = 0.0f;
+
     glm::vec2 anchorPos = { 30.0f, 30.0f };
     AxisMode  currentAxis = X_AXIS;
     ControlMode currentMode = MODE_1DOF;
 
-    float rawInputVal = 0.0f;          // Current Input (Meters or Mouse-Units)
+    float rawInputVal = 0.0f;
 
-    // -- Settings --
+    // Settings
     float radius = 4.0f;
     float frictionCoef = 5.0f;
-
-    // Scale: Pixels per Unit.
-    // Since Hapkit sends meters (e.g., 0.04m), and we want ~20 pixels movement,
-    // Scale should be around 500.0 (0.04 * 500 = 20 pixels)
     float hapkitScale = 500.0f;
-
     float springK = 0.5f;
 
-    // -- Output --
+    // Output
     float currentForce1D = 0.0f;
 
     void Recenter(glm::vec2 newCenter) {
@@ -311,67 +310,46 @@ public:
         rawInputVal = 0.0f;
     }
 
-    // Unified Update
-    // inputTarget: The position of the "Input Device" (Mouse) or Raw Float (Meters)
-    // isMouseInput: If true, we project mouse to rail. If false, we use 'rawInputMeters' directly.
     void Update(glm::vec2 mousePos, float rawInputMeters, bool isMouseInput, SandSimulation& sim) {
 
         if (currentMode == MODE_2DOF) {
-            // --- 2D MODE (Mouse/Free) ---
             devicePos = mousePos;
             currentForce1D = 0.0f;
         }
         else {
-            // --- 1D MODE (Rail/Hapkit) ---
-
             if (isMouseInput) {
-                // Project Mouse onto Axis to get "simulated meters"
-                // We assume 1 mouse pixel = 1/Scale meters
-                if (currentAxis == X_AXIS) {
-                    rawInputVal = (mousePos.x - anchorPos.x) / hapkitScale;
-                } else {
-                    rawInputVal = (mousePos.y - anchorPos.y) / hapkitScale;
-                }
+                if (currentAxis == X_AXIS) rawInputVal = (mousePos.x - anchorPos.x) / hapkitScale;
+                else                       rawInputVal = (mousePos.y - anchorPos.y) / hapkitScale;
             } else {
-                // Use actual hardware meters
                 rawInputVal = rawInputMeters;
             }
 
-            // Clamp range (approx +/- 0.08m physically)
             if (rawInputVal > 0.08f) rawInputVal = 0.08f;
             if (rawInputVal < -0.08f) rawInputVal = -0.08f;
 
-            // Calculate Device Position on Screen
-            if (currentAxis == X_AXIS) {
-                devicePos = glm::vec2(anchorPos.x + rawInputVal * hapkitScale, anchorPos.y);
-            } else {
-                devicePos = glm::vec2(anchorPos.x, anchorPos.y + rawInputVal * hapkitScale);
-            }
+            if (currentAxis == X_AXIS) devicePos = glm::vec2(anchorPos.x + rawInputVal * hapkitScale, anchorPos.y);
+            else                       devicePos = glm::vec2(anchorPos.x, anchorPos.y + rawInputVal * hapkitScale);
         }
 
-        // --- Common Physics (Proxy follows Device) ---
-        float resistance = sim.GetResistance((int)proxyPos.x, (int)proxyPos.y, (int)radius);
-        float viscosity = 1.0f / (1.0f + (resistance * frictionCoef));
+        // --- Low Pass Filter on Resistance (Kept this improvement) ---
+        float rawResistance = sim.GetResistance(proxyPos.x, proxyPos.y, radius);
+        float alpha = 0.2f;
+        smoothedResistance = smoothedResistance * (1.0f - alpha) + rawResistance * alpha;
 
+        float viscosity = 1.0f / (1.0f + (smoothedResistance * frictionCoef));
+
+        // Move Proxy
         glm::vec2 diff = devicePos - proxyPos;
         proxyPos += diff * viscosity;
 
-        // Displacement
         DisplaceSand(sim);
 
-        // --- Force Calculation ---
-        // Force (Pixels) = (Proxy - Device) * k
+        // --- Force Calculation (Standard Spring) ---
+        // INVERTED spring force for haptics
         glm::vec2 forceVec = (proxyPos - devicePos) * -springK;
 
-        // print if force is not 0
-        if (forceVec.x != 0.0f || forceVec.y != 0.0f)
-        {
-            std::cout << "Proxy: (" << proxyPos.x << ", " << proxyPos.y << ") "
-                      << "Device: (" << devicePos.x << ", " << devicePos.y << ") "
-                      << "Force: (" << forceVec.x << ", " << forceVec.y << ") "
-                      << "Resistance: " << resistance << " SpringK: " << springK << std::endl;
-        }
-        // In 1D mode, we only output the scalar component
+        if (glm::length(forceVec) < 0.025f) forceVec = glm::vec2(0.0f);
+
         if (currentMode == MODE_1DOF) {
             if (currentAxis == X_AXIS) currentForce1D = forceVec.x;
             else                       currentForce1D = forceVec.y;
@@ -395,7 +373,7 @@ public:
                         else dir = glm::normalize(dir);
 
                         glm::vec2 target = proxyPos + dir * (radius + 1.5f);
-                        glm::ivec2 best = sim.FindNearestEmpty((int)target.x, (int)target.y, 10);
+                        glm::ivec2 best = sim.FindNearestEmpty((int)target.x, (int)target.y, 3);
                         if (best.x != -1) sim.Move(x, y, best.x, best.y);
                     }
                 }
@@ -408,7 +386,6 @@ public:
         ImVec2 sProx = ImVec2(origin.x + proxyPos.x * cellSize, origin.y + proxyPos.y * cellSize);
         ImVec2 sAnch = ImVec2(origin.x + anchorPos.x * cellSize, origin.y + anchorPos.y * cellSize);
 
-        // 1. Draw Rail/Anchor (Only in 1D Mode)
         if (currentMode == MODE_1DOF) {
             ImU32 railColor = IM_COL32(100, 100, 100, 100);
             float railLen = 2000.0f;
@@ -420,13 +397,8 @@ public:
             draw_list->AddCircleFilled(sAnch, 4.0f, IM_COL32(255, 255, 0, 200));
         }
 
-        // 2. Draw Proxy (Red)
         draw_list->AddCircleFilled(sProx, radius * cellSize, IM_COL32(255, 50, 50, 200));
-
-        // 3. Draw Device (Green Outline)
         draw_list->AddCircle(sDev, radius * cellSize, IM_COL32(50, 255, 50, 200), 0, 2.0f);
-
-        // 4. Draw Force Spring
         draw_list->AddLine(sDev, sProx, IM_COL32(50, 100, 255, 255), 2.0f);
     }
 };
@@ -475,7 +447,6 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // --- Logic ---
         timeAccumulator += ImGui::GetIO().DeltaTime * 1000.0f;
         if (timeAccumulator >= sim.tickDelayMs) {
             sim.Update();
@@ -489,7 +460,6 @@ int main() {
         glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // --- Controls Window ---
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
         ImGui::Begin("Controls");
         ImGui::SliderFloat("Sim Speed (ms)", &sim.tickDelayMs, 1.0f, 200.0f);
@@ -499,17 +469,16 @@ int main() {
 
         ImGui::Separator();
 
-        // --- Haptic Hardware Connection ---
         ImGui::Text("Haptic Device");
         ImGui::InputText("Port", portBuffer, 64);
         if (ImGui::Button(device.connected ? "Disconnect" : "Connect")) {
             if (device.connected) {
                 device.Disconnect();
-                simulateInput = true; // Fallback to mouse
+                simulateInput = true;
             } else {
                 device.port = std::string(portBuffer);
                 if (device.Connect()) {
-                    simulateInput = false; // Auto-switch to device
+                    simulateInput = false;
                 }
             }
         }
@@ -537,9 +506,10 @@ int main() {
         }
 
         ImGui::Separator();
-        ImGui::SliderFloat("Stiffness", &haptics.springK, 0.001f, 5.0f);
+        ImGui::SliderFloat("Stiffness (k)", &haptics.springK, 0.001f, 5.0f);
         ImGui::SliderFloat("Radius", &haptics.radius, 1.0f, 10.0f);
         ImGui::SliderFloat("Friction", &haptics.frictionCoef, 0.01f, 10.0f);
+        ImGui::Text("Smooth Res: %.2f", haptics.smoothedResistance);
 
         ImGui::Separator();
         ImGui::Text("Press 'G' to Re-Center Anchor");
@@ -549,7 +519,6 @@ int main() {
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
         ImGui::End();
 
-        // --- Simulation View ---
         ImGui::SetNextWindowSize(ImVec2(600, 600), ImGuiCond_FirstUseEver);
         ImGui::Begin("Simulation View");
 
@@ -560,14 +529,12 @@ int main() {
         float cellH = avail.y / sim.height;
         float cellSize = (cellW < cellH) ? cellW : cellH;
 
-        // Background & Grid
         draw_list->AddRectFilled(p, ImVec2(p.x + sim.width * cellSize, p.y + sim.height * cellSize), IM_COL32(255, 255, 255, 255));
         for (int i = 0; i <= sim.width; ++i)
             draw_list->AddLine(ImVec2(p.x + i * cellSize, p.y), ImVec2(p.x + i * cellSize, p.y + sim.height * cellSize), IM_COL32(220, 220, 220, 255));
         for (int i = 0; i <= sim.height; ++i)
             draw_list->AddLine(ImVec2(p.x, p.y + i * cellSize), ImVec2(p.x + sim.width * cellSize, p.y + i * cellSize), IM_COL32(220, 220, 220, 255));
 
-        // Draw Sand
         for (int y = 0; y < sim.height; ++y) {
             for (int x = 0; x < sim.width; ++x) {
                 if (sim.Get(x, y).type != EMPTY) {
@@ -578,48 +545,39 @@ int main() {
             }
         }
 
-        // --- Haptic / Input Logic ---
         if (ImGui::IsWindowHovered()) {
             ImVec2 m = ImGui::GetMousePos();
             glm::vec2 mouseGridPos;
             mouseGridPos.x = (m.x - p.x) / cellSize;
             mouseGridPos.y = (m.y - p.y) / cellSize;
 
-            // HANDLE KEY 'G' (Set Anchor)
             if (ImGui::IsKeyPressed(ImGuiKey_G)) {
                 haptics.Recenter(mouseGridPos);
             }
 
-            // DRAW SAND
             bool userIsDrawing = ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right);
             if (userIsDrawing) {
                 int initialSoak = (currentMaterial == WETSAND) ? soakThreshold : 0;
                 sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType)currentMaterial, initialSoak);
             }
 
-            // DEVICE SYNC
-            // Always read from device if connected (clears buffer), but only use data if !simulateInput
             if (device.connected) {
                 device.Sync(haptics.currentForce1D);
             }
 
-            // UPDATE SYSTEM
             if (simulateInput) {
-                // Mouse drives the system
                 haptics.Update(mouseGridPos, 0.0f, true, sim);
             } else {
-                // Device drives the system
                 float meters = device.GetPositionMeters();
                 haptics.Update(glm::vec2(0,0), meters, false, sim);
             }
         } else {
-             // Keep physics running
              if (device.connected) device.Sync(haptics.currentForce1D);
 
              if (!simulateInput && device.connected) {
                  haptics.Update(glm::vec2(0,0), device.GetPositionMeters(), false, sim);
              } else {
-                 haptics.Update(haptics.devicePos, 0.0f, false, sim); // Hold position
+                 haptics.Update(haptics.devicePos, 0.0f, false, sim);
              }
         }
 
