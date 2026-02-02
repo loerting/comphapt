@@ -25,6 +25,7 @@ enum MaterialType {
 
 struct Cell {
     MaterialType type;
+    int soak = 0;
 };
 
 class SandSimulation {
@@ -51,9 +52,10 @@ public:
     }
 
     // Boundary-safe setter
-    void Set(int x, int y, MaterialType type) {
+    void Set(int x, int y, MaterialType type, int soak = 0) {
         if (x >= 0 && x < width && y >= 0 && y < height) {
             grid[y * width + x].type = type;
+            grid[y * width + x].soak = soak;
         }
     }
 
@@ -67,8 +69,8 @@ public:
         if (grid[y2 * width + x2].type != EMPTY) return false;
 
         Cell temp = grid[y1 * width + x1];
-        grid[y1 * width + x1].type = EMPTY;
-        grid[y2 * width + x2].type = temp.type;
+        grid[y1 * width + x1] = {EMPTY, 0};
+        grid[y2 * width + x2] = temp;
         return true;
     }
 
@@ -159,14 +161,13 @@ private:
     }
 
     void UpdateWetSand(int x, int y) {
-        // Sink through water
-        if (y + 1 < height && Get(x, y + 1).type == WATER) {
-            Swap(x, y, x, y + 1);
-            return;
-        }
         // Normal falling
         if (y + 1 < height && Get(x, y + 1).type == EMPTY) {
             Move(x, y, x, y + 1);
+            return;
+        }
+        if (y + 1 < height && Get(x, y + 1).type == WATER) {
+            Swap(x, y, x, y + 1);
             return;
         }
     }
@@ -210,9 +211,10 @@ private:
     }
 
     bool TryWetSand(int wx, int wy) {
-        static const int offsets[8][2] = {
-                { 0,  1}, { 0, -1}, { 1,  0}, {-1,  0},
-                { 1,  1}, {-1,  1}, { 1, -1}, {-1, -1}
+        static const int offsets[9][2] = {
+                {0, 1}, {1, 0}, {-1, 0}, {0, -1},
+                {1, 1}, {-1, 1}, {1, -1}, {-1, -1},
+                {0, 2}
         };
 
         for (auto& o : offsets) {
@@ -222,14 +224,29 @@ private:
             if (sx < 0 || sx >= width || sy < 0 || sy >= height)
                 continue;
 
-            if (Get(sx, sy).type == SAND) {
-                // Convert sand → wet sand
-                Set(sx, sy, WETSAND);
+            Cell& cell = grid[sy * width + sx];
 
+            if (cell.type == SAND) {
+                // Convert sand → wet sand
+                Set(sx, sy, WETSAND, 1);
                 // Consume this water
-                Set(wx, wy, EMPTY);
+                Set(wx, wy, EMPTY, 0);
 
                 return true; // reaction happened
+            }
+
+            if (cell.type == WETSAND && cell.soak < 2) {
+                cell.soak++;
+                Set(wx, wy, EMPTY, 0); // Water is absorbed
+                return true;
+            }
+
+            // 3. If already fully soaked, let water "seep" through (Swap)
+            if (cell.type == WETSAND && cell.soak >= 2) {
+                if (sy < wy) {
+                    Swap(wx, wy, sx, sy);
+                    return true;
+                }
             }
         }
 
@@ -325,9 +342,13 @@ public:
     }
 };
 
-ImU32 GetColor(MaterialType type) {
+ImU32 GetColor(Cell cell) {
+    MaterialType type = cell.type;
     if (type == SAND) return IM_COL32(235, 200, 100, 255);
-    if (type == WETSAND) return IM_COL32(160, 130, 70, 255);
+    if (type == WETSAND) {
+        if (cell.soak >= 2) return IM_COL32(100, 80, 40, 255); // Darker (Saturated)
+        return IM_COL32(160, 130, 70, 255);                  // Slightly Wet
+    }
     if (type == WATER) return IM_COL32(0, 120, 255, 200);
     return IM_COL32(0, 0, 0, 0);
 }
@@ -426,7 +447,7 @@ int main() {
                 if (sim.Get(x, y).type != EMPTY) {
                     ImVec2 min = ImVec2(p.x + x * cellSize, p.y + y * cellSize);
                     ImVec2 max = ImVec2(min.x + cellSize, min.y + cellSize);
-                    draw_list->AddRectFilled(min, max, GetColor(sim.Get(x, y).type));
+                    draw_list->AddRectFilled(min, max, GetColor(sim.Get(x, y)));
                 }
             }
         }
@@ -442,7 +463,8 @@ int main() {
             haptics.Update(mouseGridPos, sim);
 
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-               sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType) currentMaterial);
+                int initialSoak = (currentMaterial == WETSAND) ? 2 : 0;
+                sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType)currentMaterial, initialSoak);
             }
         }
 
