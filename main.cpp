@@ -14,6 +14,7 @@
 
 const int INITIAL_WIDTH = 60;
 const int INITIAL_HEIGHT = 60;
+const int soakThreshold = 2;
 
 enum MaterialType {
     EMPTY = 0,
@@ -84,7 +85,7 @@ public:
                     MaterialType type = Get(x, y).type;
 
                     if (type == SAND)         totalResistance += 0.1f;
-                    else if (type == WETSAND) totalResistance += 0.5f;
+                    else if (type == WETSAND) totalResistance += Get(x, y).soak * 0.02f + 0.1f;
                     else if (type == WATER)   totalResistance += 0.02f;
                 }
             }
@@ -235,14 +236,14 @@ private:
                 return true; // reaction happened
             }
 
-            if (cell.type == WETSAND && cell.soak < 2) {
+            if (cell.type == WETSAND && cell.soak < soakThreshold) {
                 cell.soak++;
                 Set(wx, wy, EMPTY, 0); // Water is absorbed
                 return true;
             }
 
             // 3. If already fully soaked, let water "seep" through (Swap)
-            if (cell.type == WETSAND && cell.soak >= 2) {
+            if (cell.type == WETSAND && cell.soak >= soakThreshold) {
                 if (sy < wy) {
                     Swap(wx, wy, sx, sy);
                     return true;
@@ -346,7 +347,7 @@ ImU32 GetColor(Cell cell) {
     MaterialType type = cell.type;
     if (type == SAND) return IM_COL32(235, 200, 100, 255);
     if (type == WETSAND) {
-        if (cell.soak >= 2) return IM_COL32(100, 80, 40, 255); // Darker (Saturated)
+        if (cell.soak >= soakThreshold) return IM_COL32(100, 80, 40, 255); // Darker (Saturated)
         return IM_COL32(160, 130, 70, 255);                  // Slightly Wet
     }
     if (type == WATER) return IM_COL32(0, 120, 255, 200);
@@ -463,7 +464,7 @@ int main() {
             haptics.Update(mouseGridPos, sim);
 
             if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                int initialSoak = (currentMaterial == WETSAND) ? 2 : 0;
+                int initialSoak = (currentMaterial == WETSAND) ? soakThreshold : 0;
                 sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType)currentMaterial, initialSoak);
             }
         }
