@@ -7,20 +7,28 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glfw3 REQUIRED)
 
+include_directories(serial/include)
+
+set(SERIAL_SOURCES
+        serial/src/serial.cc
+        serial/src/impl/unix.cc
+        serial/src/impl/list_ports/list_ports_linux.cc
+)
 include_directories(
         ${OPENGL_INCLUDE_DIR}
         ${GLEW_INCLUDE_DIRS}
         imgui
-        ${CMAKE_SOURCE_DIR}  # <--- ADD THIS (Points to project root)
+        ${CMAKE_SOURCE_DIR}
 )
 
 file(GLOB IMGUI_SOURCES "imgui/*.cpp")
 
-add_executable(SandSim main.cpp ${IMGUI_SOURCES})
+add_executable(SandSim main.cpp ${IMGUI_SOURCES} ${SERIAL_SOURCES})
 
 target_link_libraries(SandSim
         OpenGL::GL
         GLEW::GLEW
         glfw
-        # No GLM library needed here, it's header-only!
+        rt
+        pthread
 )
