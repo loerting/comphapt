@@ -8,6 +8,12 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <string>
+#include <sstream>
+#include <iomanip>
+
+// --- Serial Library ---
+#include <serial/serial.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -27,6 +33,92 @@ enum MaterialType {
 struct Cell {
     MaterialType type;
     int soak = 0;
+};
+
+// --- Haptic Device Communication Class ---
+// --- Haptic Device Communication Class (Robust Version) ---
+class HapticDevice {
+private:
+    serial::Serial* mySerial = nullptr;
+    float currentPositionMeters = 0.0f;
+
+public:
+    std::string port = "/dev/ttyACM0";
+    unsigned long baud = 115200;
+    bool connected = false;
+
+    ~HapticDevice() { Disconnect(); }
+
+    bool Connect() {
+        try {
+            // Timeout(0) = Non-blocking
+            mySerial = new serial::Serial(port, baud, serial::Timeout::simpleTimeout(0));
+
+            if (mySerial->isOpen()) {
+                connected = true;
+                currentPositionMeters = 0.0f;
+                // Flush input buffer on connect to remove stale data
+                mySerial->flushInput();
+                return true;
+            }
+            return false;
+        } catch (std::exception &e) {
+            std::cout << "[Error] Connect: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    void Disconnect() {
+        if (mySerial) {
+            if (mySerial->isOpen()) mySerial->write("F 0.0\n");
+            mySerial->close();
+            delete mySerial;
+            mySerial = nullptr;
+        }
+        connected = false;
+    }
+
+    void Sync(float forceOutputNewtons) {
+        if (!connected || !mySerial) return;
+
+        // 1. READ Loop (Existing logic)
+        int maxReads = 50;
+        while (mySerial->available() && maxReads-- > 0) {
+            std::string line = mySerial->readline();
+            if (line.length() > 4 && line.back() == '\n') {
+                if (line[0] == 'P') {
+                    try {
+                        float val = std::stof(line.substr(2));
+                        currentPositionMeters = val;
+                    } catch (...) {}
+                }
+            }
+        }
+
+        // 2. WRITE Force (Traffic Reduction + Formatting Fix)
+        static float lastSentForce = -999.0f;
+        static double lastSendTime = 0.0;
+        double currentTime = glfwGetTime(); // Ensure you have access to glfwGetTime or similar
+
+        // Send if force changed OR if 50ms passed (keepalive)
+        if (abs(forceOutputNewtons - lastSentForce) > 0.001f || (currentTime - lastSendTime) > 0.05) {
+            std::stringstream ss;
+
+            // --- THE FIX: Force decimal format, no scientific notation ---
+            ss << std::fixed << std::setprecision(5) << "F " << forceOutputNewtons << "\n";
+            // -------------------------------------------------------------
+
+            try {
+                mySerial->write(ss.str());
+                lastSentForce = forceOutputNewtons;
+                lastSendTime = currentTime;
+            } catch (...) {}
+        }
+    }
+
+    float GetPositionMeters() const {
+        return currentPositionMeters;
+    }
 };
 
 // --- Sand Simulation ---
@@ -196,12 +288,17 @@ public:
     AxisMode  currentAxis = X_AXIS;
     ControlMode currentMode = MODE_1DOF;
 
-    float     rawHapkitPos = 0.0f;          // 1D Input (-40 to +40)
+    float rawInputVal = 0.0f;          // Current Input (Meters or Mouse-Units)
 
     // -- Settings --
     float radius = 4.0f;
-    float frictionCoef = 1.0f;
-    float hapkitScale = 1.0f;
+    float frictionCoef = 5.0f;
+
+    // Scale: Pixels per Unit.
+    // Since Hapkit sends meters (e.g., 0.04m), and we want ~20 pixels movement,
+    // Scale should be around 500.0 (0.04 * 500 = 20 pixels)
+    float hapkitScale = 500.0f;
+
     float springK = 0.5f;
 
     // -- Output --
@@ -211,41 +308,44 @@ public:
         anchorPos = newCenter;
         proxyPos = newCenter;
         devicePos = newCenter;
-        rawHapkitPos = 0.0f;
+        rawInputVal = 0.0f;
     }
 
     // Unified Update
-    // inputTarget: The position of the "Input Device" (Mouse) in simulation space
-    void Update(glm::vec2 inputTarget, SandSimulation& sim) {
+    // inputTarget: The position of the "Input Device" (Mouse) or Raw Float (Meters)
+    // isMouseInput: If true, we project mouse to rail. If false, we use 'rawInputMeters' directly.
+    void Update(glm::vec2 mousePos, float rawInputMeters, bool isMouseInput, SandSimulation& sim) {
 
         if (currentMode == MODE_2DOF) {
             // --- 2D MODE (Mouse/Free) ---
-            devicePos = inputTarget;
-            // Clear 1D variables for safety
-            rawHapkitPos = 0.0f;
+            devicePos = mousePos;
             currentForce1D = 0.0f;
         }
         else {
             // --- 1D MODE (Rail/Hapkit) ---
-            // Calculate scalar input by projecting mouse onto the axis relative to anchor
-            float inputVal = 0.0f;
-            if (currentAxis == X_AXIS) {
-                inputVal = (inputTarget.x - anchorPos.x) / hapkitScale;
+
+            if (isMouseInput) {
+                // Project Mouse onto Axis to get "simulated meters"
+                // We assume 1 mouse pixel = 1/Scale meters
+                if (currentAxis == X_AXIS) {
+                    rawInputVal = (mousePos.x - anchorPos.x) / hapkitScale;
+                } else {
+                    rawInputVal = (mousePos.y - anchorPos.y) / hapkitScale;
+                }
             } else {
-                inputVal = (inputTarget.y - anchorPos.y) / hapkitScale;
+                // Use actual hardware meters
+                rawInputVal = rawInputMeters;
             }
 
-            // Clamp to Hapkit physical range
-            if (inputVal > 40.0f) inputVal = 40.0f;
-            if (inputVal < -40.0f) inputVal = -40.0f;
+            // Clamp range (approx +/- 0.08m physically)
+            if (rawInputVal > 0.08f) rawInputVal = 0.08f;
+            if (rawInputVal < -0.08f) rawInputVal = -0.08f;
 
-            rawHapkitPos = inputVal;
-
-            // Constrain Device to Rail
+            // Calculate Device Position on Screen
             if (currentAxis == X_AXIS) {
-                devicePos = glm::vec2(anchorPos.x + rawHapkitPos * hapkitScale, anchorPos.y);
+                devicePos = glm::vec2(anchorPos.x + rawInputVal * hapkitScale, anchorPos.y);
             } else {
-                devicePos = glm::vec2(anchorPos.x, anchorPos.y + rawHapkitPos * hapkitScale);
+                devicePos = glm::vec2(anchorPos.x, anchorPos.y + rawInputVal * hapkitScale);
             }
         }
 
@@ -260,8 +360,17 @@ public:
         DisplaceSand(sim);
 
         // --- Force Calculation ---
-        glm::vec2 forceVec = (proxyPos - devicePos) * springK;
+        // Force (Pixels) = (Proxy - Device) * k
+        glm::vec2 forceVec = (proxyPos - devicePos) * -springK;
 
+        // print if force is not 0
+        if (forceVec.x != 0.0f || forceVec.y != 0.0f)
+        {
+            std::cout << "Proxy: (" << proxyPos.x << ", " << proxyPos.y << ") "
+                      << "Device: (" << devicePos.x << ", " << devicePos.y << ") "
+                      << "Force: (" << forceVec.x << ", " << forceVec.y << ") "
+                      << "Resistance: " << resistance << " SpringK: " << springK << std::endl;
+        }
         // In 1D mode, we only output the scalar component
         if (currentMode == MODE_1DOF) {
             if (currentAxis == X_AXIS) currentForce1D = forceVec.x;
@@ -355,7 +464,10 @@ int main() {
 
     SandSimulation sim;
     HapticSystem haptics;
+    HapticDevice device;
+
     static int currentMaterial = SAND;
+    char portBuffer[64] = "/dev/ttyACM0";
 
     float timeAccumulator = 0.0f;
     bool simulateInput = true;
@@ -386,6 +498,26 @@ int main() {
         ImGui::RadioButton("H2O", &currentMaterial, WATER);
 
         ImGui::Separator();
+
+        // --- Haptic Hardware Connection ---
+        ImGui::Text("Haptic Device");
+        ImGui::InputText("Port", portBuffer, 64);
+        if (ImGui::Button(device.connected ? "Disconnect" : "Connect")) {
+            if (device.connected) {
+                device.Disconnect();
+                simulateInput = true; // Fallback to mouse
+            } else {
+                device.port = std::string(portBuffer);
+                if (device.Connect()) {
+                    simulateInput = false; // Auto-switch to device
+                }
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(device.connected ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1),
+            device.connected ? "Connected" : "Disconnected");
+
+        ImGui::Separator();
         ImGui::Text("Control Mode");
         int mode = (int)haptics.currentMode;
         if (ImGui::RadioButton("1D (Hapkit/Rail)", mode == 0)) haptics.currentMode = HapticSystem::MODE_1DOF;
@@ -399,14 +531,15 @@ int main() {
             ImGui::SameLine();
             if (ImGui::RadioButton("Y-Axis", axis == 1)) haptics.currentAxis = HapticSystem::Y_AXIS;
 
-            ImGui::SliderFloat("Scale", &haptics.hapkitScale, 0.1f, 2.0f);
-            ImGui::Text("Output Force: %.2f", haptics.currentForce1D);
+            ImGui::SliderFloat("Scale (Pix/m)", &haptics.hapkitScale, 100.0f, 2000.0f);
+            ImGui::Text("Input (m): %.4f", haptics.rawInputVal);
+            ImGui::Text("Output (N): %.2f", haptics.currentForce1D);
         }
 
         ImGui::Separator();
-        ImGui::SliderFloat("Stiffness", &haptics.springK, 0.1f, 2.0f);
+        ImGui::SliderFloat("Stiffness", &haptics.springK, 0.001f, 5.0f);
         ImGui::SliderFloat("Radius", &haptics.radius, 1.0f, 10.0f);
-        ImGui::SliderFloat("Friction", &haptics.frictionCoef, 0.01f, 5.0f);
+        ImGui::SliderFloat("Friction", &haptics.frictionCoef, 0.01f, 10.0f);
 
         ImGui::Separator();
         ImGui::Text("Press 'G' to Re-Center Anchor");
@@ -457,27 +590,37 @@ int main() {
                 haptics.Recenter(mouseGridPos);
             }
 
-            // DRAW SAND (Left or Right Click)
+            // DRAW SAND
             bool userIsDrawing = ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right);
             if (userIsDrawing) {
                 int initialSoak = (currentMaterial == WETSAND) ? soakThreshold : 0;
                 sim.Set((int)mouseGridPos.x, (int)mouseGridPos.y, (MaterialType)currentMaterial, initialSoak);
             }
 
-            // SIMULATE HAPTICS
-            // If "Drive w/ Mouse" is on, we pass the mouse pos as the "Input Device"
-            // The HapticSystem decides if that means "2D Position" or "1D Projection"
+            // DEVICE SYNC
+            // Always read from device if connected (clears buffer), but only use data if !simulateInput
+            if (device.connected) {
+                device.Sync(haptics.currentForce1D);
+            }
+
+            // UPDATE SYSTEM
             if (simulateInput) {
-                haptics.Update(mouseGridPos, sim);
+                // Mouse drives the system
+                haptics.Update(mouseGridPos, 0.0f, true, sim);
             } else {
-                // If not simulating input (e.g. using Real Device), we'd pass raw data here.
-                // For now, we just hold the last known position relative to anchor.
-                // To keep physics alive, we call Update with the CURRENT device pos.
-                haptics.Update(haptics.devicePos, sim);
+                // Device drives the system
+                float meters = device.GetPositionMeters();
+                haptics.Update(glm::vec2(0,0), meters, false, sim);
             }
         } else {
              // Keep physics running
-             haptics.Update(haptics.devicePos, sim);
+             if (device.connected) device.Sync(haptics.currentForce1D);
+
+             if (!simulateInput && device.connected) {
+                 haptics.Update(glm::vec2(0,0), device.GetPositionMeters(), false, sim);
+             } else {
+                 haptics.Update(haptics.devicePos, 0.0f, false, sim); // Hold position
+             }
         }
 
         haptics.Render(draw_list, p, cellSize);
